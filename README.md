@@ -3,6 +3,7 @@
 Focused Pi tools for Supabase work without granting general unsandboxed Bash.
 
 - `supabase_cli` runs literal arguments through a configured Supabase CLI prefix.
+- `supabase_types` captures complete local TypeScript generation into a bounded private file for handoff.
 - `deno_test` runs Edge Function tests through a permission-bounded `deno test` prefix.
 - `deno_cache` performs focused import/cache preflight through a fixed `deno cache` prefix.
 - `supabase_functions_serve` manages one trusted-configured, session-owned Edge Functions service.
@@ -92,6 +93,36 @@ Recognized destructive commands use the `ask`, `yes`, or `no` gate. Manage it wi
 ```
 
 Gate state defaults to `.pi/supabase-tools-state.json`. Add that file to the consuming project's `.gitignore`.
+
+## Complete type-generation handoff
+
+Opt in through trusted `supabase-tools.json` configuration:
+
+```json
+{ "typeGeneration": { "schemas": ["public"] } }
+```
+
+Absent configuration disables capture. A project object replaces the global object. Schema names must be unique simple PostgreSQL identifiers (1–63 ASCII characters, starting with a letter or underscore; remaining characters may also be digits or `$`). The tool runs only `gen types --local --lang typescript --schema <configured schemas>` through the existing Supabase prefix, environment, working directory, and blocked-command policy. Capture requires a trusted project; it accepts no model-selected schema, command, arguments, environment, timeout or destination.
+
+```text
+supabase_types({ action: "capture" })
+// { complete: true, artifactId, path, bytes, sha256 }
+// Hand the reference to a filesystem-capable consumer; await consumption.
+supabase_types({ action: "release", artifactId: "<returned ID>" })
+```
+
+The source is **raw stdout**, never stderr, a reconstructed chat transcript, or a truncated diagnostic tail. Capture results contain only metadata; no process output is streamed or returned. `complete: true` means process/stream/file completion, **not valid TypeScript**. The consumer owns validation, terminal-LF normalization, atomic installation, and non-writing comparison.
+
+For generation and checking:
+
+1. Capture A and hand the path/digest to the consumer. It validates and installs from that file without launching the CLI.
+2. After the consumer acknowledges consumption, release A.
+3. Invoke capture again to produce B from a **fresh execution**.
+4. The consumer checks B against the installed target without writing it; release B after consumption, even if validation/comparison fails.
+
+There is one in-flight or retained artifact per Pi session, capped at **10 MiB**. A second capture refuses until release; no eviction or queue. Capture/release during generation refuses. Files live in a private OS temporary directory (0700), with exclusive creation and mode 0600. Consume before quit, reload, new, resume or fork: normal session shutdown aborts generation and removes owned files. Failed captures remove partial files; cleanup failures are reported and block further capture until resolved. Release uses the opaque ID, not a path, and still works after configuration changes. SIGKILL/power-loss cleanup and aggregate quotas across sessions are not provided; an abnormal exit may require operator removal of an abandoned `pi-supabase-types-*` temporary directory.
+
+DMNG's existing `generate_api_types({ input: artifact.path, target })` / `--input` consumer is compatible; use a disposable target for smoke tests. Adopting this package and enabling its tool/configuration in DMNG is a separate change.
 
 ## Security boundary
 

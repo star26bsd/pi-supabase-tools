@@ -36,6 +36,14 @@ _Avoid_: Deno CLI, dependency shell
 The model-facing module that starts, inspects, and stops one trusted-configured, Pi-session-owned `supabase functions serve` process for a project. It reports lifecycle metadata, never service output or function health.
 _Avoid_: Functions daemon, service broker, log viewer
 
+**Type capture tool**:
+The model-facing module that captures complete raw stdout from a trusted-configured local TypeScript generation into one bounded, private, session-owned file for handoff to a filesystem-capable consumer.
+_Avoid_: Generic artifact platform, generator/check runner, npm runner
+
+**Type artifact**:
+A complete stdout file identified by an opaque release handle, readable path, byte count and digest. Capture completion does not establish TypeScript validity. The consumer owns validation and installation/checking; the Supabase session releases the file after consumption.
+_Avoid_: Validated types, permanent generated file
+
 ## Example dialogue
 
 **Developer:** Can the Supabase session reset the local database?

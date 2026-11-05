@@ -24,6 +24,10 @@ export interface FunctionsServeConfig {
   args: string[];
 }
 
+export interface TypeGenerationConfig {
+  schemas: string[];
+}
+
 export interface SupabaseToolsConfig {
   pathPrepend?: string[];
   environment?: Record<string, string | null>;
@@ -34,6 +38,7 @@ export interface SupabaseToolsConfig {
   blockedCommands?: BlockedCommand[];
   denoTestEnvironmentProfiles?: Record<string, DenoTestEnvironmentProfile>;
   functionsServe?: FunctionsServeConfig;
+  typeGeneration?: TypeGenerationConfig;
 }
 
 export interface ResolvedConfig {
@@ -50,6 +55,7 @@ export interface ResolvedConfig {
   blockedCommands: BlockedCommand[];
   denoTestEnvironmentProfiles: Record<string, DenoTestEnvironmentProfile>;
   functionsServe?: FunctionsServeConfig;
+  typeGeneration?: TypeGenerationConfig;
   defaultTimeout: number;
 }
 

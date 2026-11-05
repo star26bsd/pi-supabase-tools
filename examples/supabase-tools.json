@@ -9,6 +9,9 @@
     "denoCache": ["deno", "cache"]
   },
   "workingDirectory": "supabase",
+  "typeGeneration": {
+    "schemas": ["public"]
+  },
   "functionsServe": {
     "args": ["--env-file", ".env.local"]
   },

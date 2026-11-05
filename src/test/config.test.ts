@@ -194,6 +194,39 @@ describe("configuration discovery and merge", () => {
   });
 });
 
+describe("type generation configuration", () => {
+  test("is disabled by default and project object replaces global object", () => {
+    assert.equal(mergeConfig(undefined, undefined).typeGeneration, undefined);
+    assert.deepEqual(mergeConfig({ typeGeneration: { schemas: ["public"] } }, undefined).typeGeneration, { schemas: ["public"] });
+    assert.deepEqual(mergeConfig(
+      { typeGeneration: { schemas: ["public", "old"] } },
+      { typeGeneration: { schemas: ["api"] } },
+    ).typeGeneration, { schemas: ["api"] });
+  });
+
+  test("validates the complete narrow object and conservative schema identifiers", () => {
+    for (const value of [null, [], {}, { schemas: [] }, { schemas: "public" },
+      { schemas: ["public"], args: [] }, { schemas: ["public", "public"] },
+      ...["", "--linked", "public,private", "public\\0", "a b", "a".repeat(64), '"quoted"'].map((schema) => ({ schemas: [schema] })),
+    ]) {
+      assert.throws(() => validateConfig({ typeGeneration: value }, "test"), ConfigurationError);
+    }
+    assert.deepEqual(validateConfig({ typeGeneration: { schemas: ["public", "My_API$1"] } }, "test").typeGeneration,
+      { schemas: ["public", "My_API$1"] });
+  });
+
+  test("untrusted project cannot enable capture and invalid global config fails closed", () => {
+    const isolatedHome = join(root, "types-home");
+    const isolatedProject = join(root, "types-project");
+    mkdirSync(join(isolatedHome, ".pi", "agent"), { recursive: true });
+    mkdirSync(join(isolatedProject, ".pi"), { recursive: true });
+    writeJson(join(isolatedProject, ".pi", "supabase-tools.json"), { typeGeneration: { schemas: ["api"] } });
+    assert.equal(loadConfig({ cwd: isolatedProject, homeDirectory: isolatedHome, projectTrusted: false }).typeGeneration, undefined);
+    writeJson(join(isolatedHome, ".pi", "agent", "supabase-tools.json"), { typeGeneration: { schemas: [] } });
+    assert.throws(() => loadConfig({ cwd: isolatedProject, homeDirectory: isolatedHome, projectTrusted: true }), ConfigurationError);
+  });
+});
+
 describe("child environment", () => {
   test("inherits, overrides, removes, and prepends PATH", () => {
     const config = mergeConfig({
