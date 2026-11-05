@@ -38,6 +38,7 @@ const TOP_LEVEL_KEYS = new Set([
   "blockedCommands",
   "denoTestEnvironmentProfiles",
   "functionsServe",
+  "typeGeneration",
 ]);
 const COMMAND_KEYS = new Set(["supabaseCli", "denoTest", "denoCache"]);
 
@@ -254,6 +255,25 @@ export function validateConfig(value: unknown, source: string): SupabaseToolsCon
     };
   }
 
+  if (value.typeGeneration !== undefined) {
+    const location = `${source}.typeGeneration`;
+    if (!isRecord(value.typeGeneration)) {
+      throw new ConfigurationError(`${location} must be an object`);
+    }
+    for (const key of Object.keys(value.typeGeneration)) {
+      if (key !== "schemas") throw new ConfigurationError(`${location} has unknown property '${key}'`);
+    }
+    const schemas = validateStringArray(value.typeGeneration.schemas, `${location}.schemas`, false);
+    // A conservative PostgreSQL identifier subset; no CLI flags, delimiters or NUL.
+    if (schemas.some((schema) => !/^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(schema))) {
+      throw new ConfigurationError(`${location}.schemas must contain simple PostgreSQL identifiers (1-63 ASCII characters)`);
+    }
+    if (new Set(schemas).size !== schemas.length) {
+      throw new ConfigurationError(`${location}.schemas must not contain duplicates`);
+    }
+    config.typeGeneration = { schemas };
+  }
+
   return config;
 }
 
@@ -331,6 +351,7 @@ export function mergeConfig(
       projectConfig?.denoTestEnvironmentProfiles ?? {},
     ),
     functionsServe: projectConfig?.functionsServe ?? globalConfig?.functionsServe,
+    typeGeneration: projectConfig?.typeGeneration ?? globalConfig?.typeGeneration,
     defaultTimeout: DEFAULT_CONFIG.defaultTimeout,
   };
 }

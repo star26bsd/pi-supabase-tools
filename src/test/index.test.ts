@@ -116,7 +116,7 @@ function context() {
 describe("registered tools", () => {
   test("registers the clean breaking tool names", () => {
     assert.deepEqual([...tools.keys()], [
-      "supabase_functions_serve", "supabase_cli", "deno_test", "deno_cache",
+      "supabase_functions_serve", "supabase_types", "supabase_cli", "deno_test", "deno_cache",
     ]);
     assert.equal(tools.has("supabase_bash"), false);
     assert.deepEqual(

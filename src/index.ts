@@ -20,6 +20,7 @@ import {
   writeState,
 } from "./destructive-gate.js";
 import { runCommand } from "./tool.js";
+import { TypeCaptureManager } from "./type-capture.js";
 import type {
   AgentToolResult,
   ApprovalRecord,
@@ -106,6 +107,7 @@ function approveRequest(
 export default async function supabaseTools(pi: ExtensionAPI) {
   const T = await getType();
   const functionsServeManager = new FunctionsServeManager();
+  const typeCaptureManager = new TypeCaptureManager();
   const parameters = T.Object({
     args: T.Array(T.String(), {
       description: "Literal arguments appended to the configured command prefix",
@@ -181,6 +183,58 @@ export default async function supabaseTools(pi: ExtensionAPI) {
         environment: buildChildEnvironment(config),
         timeoutSeconds: config.defaultTimeout,
         blockedCommands: config.blockedCommands,
+      }, signal);
+    },
+  });
+
+  pi.registerTool({
+    name: "supabase_types",
+    label: "Supabase Types",
+    description: "Capture complete local TypeScript generation into one private session-owned artifact (10 MiB maximum), or release it after consumption. No generated source is returned in chat.",
+    promptSnippet: "Capture and release complete local Supabase TypeScript generation artifacts",
+    promptGuidelines: [
+      "Use supabase_types only for trusted-configured local type generation; hand its complete artifact to a filesystem-capable consumer for validation and installation.",
+      "Release supabase_types artifacts only after the consumer acknowledges consumption; capture again for a fresh check. Consume before session shutdown or reload.",
+      "supabase_types capture success does not mean valid TypeScript or a successful generated-types check.",
+    ],
+    parameters: T.Object({
+      action: T.String({ enum: ["capture", "release"] }),
+      artifactId: T.Optional(T.String({ description: "Opaque ID returned by capture, required only for release" })),
+    }, { additionalProperties: false }),
+    executionMode: "sequential",
+    async execute(
+      _id: string,
+      params: { action: "capture" | "release"; artifactId?: string },
+      signal: AbortSignal | undefined,
+      _onUpdate: ((partialResult: AgentToolResult) => void) | undefined,
+      rawContext: unknown,
+    ) {
+      // Validate here too: extension hooks may mutate arguments after schema validation.
+      if (!params || Object.keys(params).some((key) => key !== "action" && key !== "artifactId")) {
+        throw new Error("Supabase types: invalid arguments");
+      }
+      if (params.action === "release" && typeof params.artifactId === "string") {
+        return typeCaptureManager.release(params.artifactId);
+      }
+      if (params.action !== "capture" || params.artifactId !== undefined) {
+        throw new Error("Supabase types: use capture, or release with an artifactId");
+      }
+      const ctx = rawContext as PiContext;
+      if (!ctx.isProjectTrusted()) throw new Error("Supabase types: project_untrusted");
+      const config = resolveConfig(ctx);
+      if (!config.typeGeneration) throw new Error("Supabase types: not_enabled_by_configuration");
+      const args = ["gen", "types", "--local", "--lang", "typescript", "--schema", config.typeGeneration.schemas.join(",")];
+      if (findBlockedCommand(args, config.blockedCommands)) {
+        throw new Error("Supabase types: blocked_by_configuration (gen types)");
+      }
+      // This fixed read-only operation is not classified as destructive. Do not add
+      // automation/output-format flags: stdout is the raw generated source.
+      return typeCaptureManager.capture({
+        prefix: config.commands.supabaseCli,
+        args,
+        cwd: executionDirectory(ctx, config),
+        environment: buildChildEnvironment(config),
+        timeout: config.defaultTimeout,
       }, signal);
     },
   });
@@ -448,7 +502,11 @@ export default async function supabaseTools(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    await functionsServeManager.shutdown();
+    // Start both cleanups even if either reports a failure.
+    const cleanup = await Promise.allSettled([
+      functionsServeManager.shutdown(), typeCaptureManager.shutdown(),
+    ]);
+    for (const outcome of cleanup) if (outcome.status === "rejected") throw outcome.reason;
   });
 
   pi.on("session_start", async (_event: unknown, rawContext: unknown) => {

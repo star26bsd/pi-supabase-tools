@@ -155,9 +155,37 @@ Stop sends SIGTERM to the owned process group and allows a bounded 10-second gra
 
 Service output remains private and is never sent through tool updates, results, errors, details, session lifecycle state, or persisted entries. Results contain only canned phase text plus structured phase, timestamps, exit code/signal, and cleanup confirmation. The tool narrows model choice but is not an operating-system sandbox.
 
+## Local TypeScript capture
+
+`supabase_types` exposes only `{ action: "capture" }` and `{ action: "release", artifactId: string }`. Unknown fields and invalid action/ID combinations are rejected before execution. No model-selected command, schema, environment, timeout, destination or unrelated output capture is available.
+
+Optional trusted configuration `typeGeneration: { schemas: ["public"] }` enables capture. The object has exactly one required property: a nonempty array of unique simple PostgreSQL schema identifiers matching `[A-Za-z_][A-Za-z0-9_$]{0,62}`. Quoted/non-ASCII schema identifiers are not supported. Unknown properties, empty lists, commas, CLI flags and NUL fail configuration validation. The project object replaces the global object; without either, capture is disabled. Capture additionally requires project trust, even when enabled globally.
+
+The operation uses the resolved Supabase CLI prefix, working directory and child environment, with exactly `gen types --local --lang typescript --schema <comma-separated configured schemas>`. Existing blocked-command rules apply before storage allocation or process launch. This fixed read-only operation is not destructive; it does not consume or alter destructive approvals. It does not add automation/output-format flags, acquire credentials, or use Deno environment profiles. The existing 120-second default timeout is fixed for capture.
+
+### Completion and privacy
+
+An internal raw-stdout sink in the existing command runner writes each pipe chunk before returning, without decoding or re-encoding bytes. Small synchronous writes avoid an unbounded asynchronous write queue; short writes are completed, zero-byte writes fail. All source writes finish before file sync/close. Publication requires successful subprocess `close` (not merely `exit`), completed streams and file sync/close. Standard process-group cancellation, timeout and bounded settlement are reused. No alternative process launcher is introduced.
+
+Successful capture returns only `{ complete: true, artifactId, path, bytes, sha256 }` in text and structured details. The opaque random artifact ID is a release handle, never parsed as a path. SHA-256 covers exactly the captured bytes. Neither stdout nor stderr is streamed or included in results/errors; capture process failures use canned phase/reason messages rather than executable/configuration/output text. Ordinary CLI/Deno output remains bounded to 50 KiB / 2000 lines with existing redaction behavior. Credential acquisition and private service output cannot select the capture path through their tools.
+
+Complete capture is not source validation: even empty or malformed stdout can be completely captured. A filesystem-capable consumer validates framing, normalizes terminal LF, atomically installs the source, and compares without writing in check mode. No schema-specific validator is included here.
+
+### Storage and lifetime
+
+One in-flight or retained artifact is permitted per extension session across all projects, at most **10 MiB (10,485,760 bytes)**. An exact-limit artifact succeeds; overflow terminates the process and fails. In-flight capture/release calls refuse; retained files are never evicted to admit another capture. A new tool-created OS temporary directory (`pi-supabase-types-*`, 0700) contains one exclusively created `source.ts` (0600). No caller supplies storage paths. Release deletes only the owned file and then the empty owned directory, without recursive traversal. A substituted file symlink is unlinked, never followed to its target. This is not protection against arbitrary same-user host code.
+
+A consumer must finish reading/validation/installation or check and acknowledge consumption **before** the Supabase session calls release. Release works from owned state even if trust or configuration subsequently changes. Normal quit/reload/new/resume/fork shutdown aborts in-flight generation, waits for bounded process settlement, and removes retained/partial storage. Failure cleanup is attempted for nonzero exit, spawn/stream failure, pre/mid abort, timeout, overflow and filesystem failure. No failure publishes a partial-success artifact or touches a consumer target.
+
+Cleanup errors are reported with the owned directory for operator diagnosis and preserve ownership rather than admitting more captures. Retained-artifact release can be retried; shutdown retries cleanup. An ambiguous descriptor-close failure is reported as `file_close_unconfirmed`, is never retried against a potentially reused descriptor, and disables further capture in that manager. No cleanup success is claimed for that case. SIGKILL, power loss, OS-temp eviction, malicious same-user interference, crash recovery and cross-session aggregate quotas are outside the guarantee; abnormal termination can leave private storage for operator cleanup. There is no registry service, daemon or persistent session recovery.
+
+### Fresh generation/check sequence
+
+Capture A → consumer validates/installs A using its existing input-file interface (no CLI subprocess) → acknowledge and release A → **new capture invocation B** → consumer checks B against the target without writing → acknowledge and release B. Rechecking A does not establish freshness. Matching B passes and changed B fails without changing the target. Invalid consumer input leaves the target unchanged regardless of capture completion.
+
 ## Session steering
 
-The package does not prescribe orchestration or automatically load a role prompt. Users grant `supabase_cli` and `deno_test` to a visible, named Supabase session through Pi's tool allowlist and own any additional steering.
+The package does not prescribe orchestration or automatically load a role prompt. Users grant the desired focused tools (including `supabase_types` when enabled) to a visible, named Supabase session through Pi's tool allowlist and own any additional steering.
 
 The package includes `examples/supabase-session-prompt.md` as an optional, non-loaded steering example.
 

@@ -13,6 +13,15 @@ import type { AgentToolResult } from "./types.js";
 export interface RunContext {
   signal: AbortSignal | undefined;
   onUpdate?: (partialResult: AgentToolResult) => void;
+  /** Internal type-capture sink. Synchronous writes finish before returning.
+   * Capture withholds both streams from diagnostics and model updates. */
+  stdoutCapture?: (chunk: Buffer) => void;
+}
+
+export class CommandExecutionError extends Error {
+  constructor(readonly reason: "start" | "abort" | "timeout" | "exit" | "capture" | "stream", message: string) {
+    super(message);
+  }
 }
 
 export interface CommandInvocation {
@@ -141,12 +150,17 @@ export function runCommand(
     redactValues = [],
     streamOutput = true,
   } = invocation;
-  const { signal, onUpdate } = context;
+  const { signal, onUpdate, stdoutCapture } = context;
+  if (stdoutCapture && redactValues.length > 0) {
+    throw new Error("Profile-backed output cannot be captured");
+  }
+  const failure = (reason: CommandExecutionError["reason"], message: string) =>
+    new CommandExecutionError(reason, stdoutCapture ? `Type generation process failed: ${reason}` : message);
   const [binary, spawnArgs] = buildSpawnCommand(prefix, args);
   const command = describeCommand(prefix, args);
 
   if (signal?.aborted) {
-    return Promise.reject(new Error(`Command aborted before execution: ${command}`));
+    return Promise.reject(failure("abort", `Command aborted before execution: ${command}`));
   }
 
   return new Promise((resolve, reject) => {
@@ -158,7 +172,7 @@ export function runCommand(
         env: environment,
       });
     } catch (error) {
-      reject(processStartError(command, cwd, error));
+      reject(failure("start", processStartError(command, cwd, error).message));
       return;
     }
 
@@ -168,7 +182,8 @@ export function runCommand(
     const stdoutDecoder = new StringDecoder("utf-8");
     const stderrDecoder = new StringDecoder("utf-8");
     let redactorsFlushed = false;
-    let termination: "abort" | "timeout" | undefined;
+    type Termination = "abort" | "timeout" | "capture" | "stream";
+    let termination: Termination | undefined;
     let settled = false;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let settlementHandle: ReturnType<typeof setTimeout> | undefined;
@@ -188,10 +203,11 @@ export function runCommand(
       signal?.removeEventListener("abort", onAbort);
       reject(error);
     };
-    const terminationError = (reason: "abort" | "timeout") => reason === "abort"
-      ? new Error(`Command aborted: ${command}`)
-      : new Error(`Command timed out after ${timeout} seconds: ${command}`);
-    const stop = (reason: "abort" | "timeout") => {
+    const terminationError = (reason: Termination) => failure(reason,
+      reason === "abort" ? `Command aborted: ${command}`
+        : reason === "timeout" ? `Command timed out after ${timeout} seconds: ${command}`
+          : `Command ${reason} failed: ${command}`);
+    const stop = (reason: Termination) => {
       if (termination || settled) return;
       termination = reason;
       terminateProcessTree(child);
@@ -216,17 +232,32 @@ export function runCommand(
       }
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => appendOutput(stdoutRedactor, stdoutDecoder, chunk));
-    child.stderr?.on("data", (chunk: Buffer) => appendOutput(stderrRedactor, stderrDecoder, chunk));
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled || termination) return;
+      if (stdoutCapture) {
+        try { stdoutCapture(chunk); } catch { stop("capture"); }
+      } else {
+        appendOutput(stdoutRedactor, stdoutDecoder, chunk);
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (!settled && !termination && !stdoutCapture) appendOutput(stderrRedactor, stderrDecoder, chunk);
+    });
+    child.stdout?.on("error", () => stop("stream"));
+    child.stderr?.on("error", () => stop("stream"));
 
     child.once("error", (error) => {
-      rejectOnce(termination ? terminationError(termination) : processStartError(command, cwd, error));
+      rejectOnce(termination ? terminationError(termination) : failure("start", processStartError(command, cwd, error).message));
     });
 
     child.once("close", (code, closeSignal) => {
       if (settled) return;
       if (termination) {
         rejectOnce(terminationError(termination));
+        return;
+      }
+      if (stdoutCapture && (!child.stdout?.readableEnded || !child.stderr?.readableEnded)) {
+        rejectOnce(failure("stream", "Type generation streams did not complete"));
         return;
       }
       settled = true;
@@ -237,7 +268,7 @@ export function runCommand(
       if ((code ?? 1) !== 0) {
         const suffix = output().length > 0 ? `\n${output()}` : "";
         reject(
-          new Error(
+          failure("exit",
             `Command failed with exit code ${code ?? "unknown"}${closeSignal ? ` (${closeSignal})` : ""}: ${command}${suffix}`,
           ),
         );
@@ -260,5 +291,7 @@ export function runCommand(
     if (timeout > 0) {
       timeoutHandle = setTimeout(() => stop("timeout"), timeout * 1000);
     }
+    // Cancellation can race with spawn and listener installation.
+    if (signal?.aborted) onAbort();
   });
 }
