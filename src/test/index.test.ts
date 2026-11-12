@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import supabaseTools from "../index.js";
+import { cliV2Contracts } from "./fixtures/cli-v2-contracts.js";
 
 let root: string;
 let tools: Map<string, any>;
@@ -29,6 +30,12 @@ before(async () => {
     '  process.on("SIGTERM", () => process.exit(0));',
     '  setInterval(() => {}, 1000);',
     '} else if (args[0] === "supabase-prefix" && args[1] === "status" && args[2] === "-o" && args[3] === "env") {',
+    '  if (process.env.CONTRACT_STDOUT) {',
+    '    if (args.length !== 4) process.exit(8);',
+    '    process.stdout.write(process.env.CONTRACT_STDOUT);',
+    '    process.stderr.write(process.env.CONTRACT_STDERR);',
+    '    process.exit(0);',
+    '  }',
     `  if (existsSync(${JSON.stringify(join(root, "nul-status-mode"))})) console.log('API_URL="prefix\\u0000TOPSECRETsuffix"');`,
     '  else console.log(\'API_URL="http://local.test"\');',
     '  console.log(\'ANON_KEY="profile-secret-key"\');',
@@ -41,6 +48,11 @@ before(async () => {
     '  else {',
     '    console.log(JSON.stringify(args));',
     '    if (process.env.TEST_URL) console.log(`${process.env.TEST_URL} ${process.env.TEST_KEY}`);',
+    '    if (process.env.CONTRACT_STDOUT) {',
+    '      if (process.env.JWT_SECRET || process.env.LINKED_PROJECT_REF || process.env.SERVICE_ROLE_KEY) throw new Error("unmapped status variable injected");',
+    '      console.error(process.env.TEST_KEY);',
+    '      process.exitCode = Number(process.env.TEST_EXIT_CODE);',
+    '    }',
     '  }',
     '}',
   ].join("\n"), "utf-8");
@@ -234,6 +246,49 @@ describe("registered tools", () => {
     );
   });
 
+  for (const contract of cliV2Contracts) {
+    test(`CLI ${contract.version}: status diagnostics stay private and mapped values are redacted on success/failure`, async () => {
+      const configPath = join(root, ".pi", "supabase-tools.json");
+      const original = await readFile(configPath, "utf-8");
+      try {
+        for (const exitCode of [0, 7]) {
+          const config = JSON.parse(original);
+          config.environment = {
+            CONTRACT_STDOUT: contract.statusStdout,
+            CONTRACT_STDERR: contract.statusStderr,
+            TEST_EXIT_CODE: String(exitCode),
+            JWT_SECRET: null, LINKED_PROJECT_REF: null, SERVICE_ROLE_KEY: null,
+          };
+          await writeFile(configPath, JSON.stringify(config));
+          const updates: unknown[] = [];
+          const execution = tools.get("deno_test").execute(
+            "call", { args: ["contract.test.ts"], environmentProfile: "local" }, undefined,
+            (update: unknown) => updates.push(update), context(),
+          );
+          const assertPrivate = (value: unknown) => {
+            const text = JSON.stringify(value);
+            assert.match(text, /\[REDACTED\] \[REDACTED\]/);
+            assert.doesNotMatch(text, /synthetic-|127\.0\.0\.1|Stopped services|deprecated|unmapped status variable/);
+          };
+          if (exitCode === 0) {
+            const result = await execution;
+            assert.equal(result.details.exitCode, 0);
+            assertPrivate(result);
+          } else {
+            await assert.rejects(execution, (error: Error) => {
+              assert.match(error.message, /exit code 7/);
+              assertPrivate(exposedError(error));
+              return true;
+            });
+          }
+          assert.deepEqual(updates, []);
+        }
+      } finally {
+        await writeFile(configPath, original);
+      }
+    });
+  }
+
   test("rejects acquired NUL values without exposing them through process launch", async () => {
     const marker = join(root, "nul-status-mode");
     await writeFile(marker, "enabled");
@@ -402,6 +457,22 @@ describe("registered tools", () => {
       context(),
     );
     assert.match(allowed.content[0].text, /--yes/);
+    assert.deepEqual(JSON.parse(allowed.content[0].text.trim()), [
+      "supabase-prefix", "db", "reset", "--local", "--agent", "yes", "--yes",
+    ]);
+
+    // Approval is one-shot; automation flags cannot grant authority on retry.
+    const retry = await tools.get("supabase_cli").execute(
+      "call", { args: ["db", "reset", "--local", "--agent", "yes", "--yes"] },
+      undefined, undefined, context(),
+    );
+    assert.equal(retry.details.action, "approval_required");
+    await command.handler("no", context());
+    const denied = await tools.get("supabase_cli").execute(
+      "call", { args: ["db", "reset", "--local", "--yes"] },
+      undefined, undefined, context(),
+    );
+    assert.equal(denied.details.action, "blocked");
   });
 
   test("fails closed when trusted project configuration becomes malformed", async () => {

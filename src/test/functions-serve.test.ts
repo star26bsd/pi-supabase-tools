@@ -7,6 +7,7 @@ import {
   FunctionsServeController,
   type FunctionsServeInvocation,
 } from "../functions-serve.js";
+import { cliV2Contracts } from "./fixtures/cli-v2-contracts.js";
 
 let directory: string;
 let script: string;
@@ -21,11 +22,12 @@ before(async () => {
     'writeFileSync(process.env.INSPECT_FILE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env.EXACT_ENV }));',
     'if (mode === "early") { console.error("PRIVATE-EARLY"); process.exit(7); }',
     'if (mode !== "silent") {',
-    '  const marker = Buffer.from("🔐 \\u001b[32m[2026-01-01T00:00:00Z] Serving functions on http://127.0.0.1:54321\\u001b[0m\\n");',
+    '  const marker = Buffer.from(process.env.LISTENER ?? "🔐 \\u001b[32m[2026-01-01T00:00:00Z] Serving functions on http://127.0.0.1:54321\\u001b[0m\\n");',
     '  const stream = mode === "stderr" ? process.stderr : process.stdout;',
     '  stream.write(marker.subarray(0, 1));',
     '  setTimeout(() => stream.write(marker.subarray(1, 19)), 5);',
-    '  setTimeout(() => stream.write(marker.subarray(19)), 10);',
+    '  setTimeout(() => stream.write(marker.subarray(19, 47)), 10);',
+    '  setTimeout(() => stream.write(marker.subarray(47)), 15);',
     '}',
     'if (mode === "spontaneous") setTimeout(() => { console.error("PRIVATE-CLOSE"); process.exit(9); }, 30);',
     'if (mode === "descendant") {',
@@ -85,6 +87,68 @@ function exposedError(error: Error): Record<string, unknown> {
 }
 
 describe("functions serve lifecycle", () => {
+  for (const contract of cliV2Contracts) {
+    test(`CLI ${contract.version}: split listener on either stream, graceful cleanup and restart`, async () => {
+      for (const stream of ["stdout", "stderr"]) {
+        const controller = new FunctionsServeController({ stopGraceMs: 300 });
+        const value = invocation(stream);
+        // ANSI, UTF-8 and timestamp prefixes are transport stress, not a captured CLI transcript.
+        value.environment.LISTENER = `🔐 \u001b[32m[2026-01-01T00:00:00Z] ${contract.listener}\u001b[0m`;
+        try {
+          for (let run = 0; run < 2; run += 1) {
+            await rm(value.environment.TERM_FILE!, { force: true });
+            const start = await controller.start(value);
+            assert.equal(start.details?.phase, "running");
+            assertNoPrivateOutput(start);
+            assert.equal((await controller.status()).details?.phase, "running");
+            const stop = await controller.stop();
+            assert.equal(stop.details?.phase, "stopped");
+            assert.equal((stop.details?.lastExit as any).cleanup, "confirmed");
+            assertNoPrivateOutput(stop);
+            await access(value.environment.TERM_FILE!);
+          }
+        } finally {
+          await controller.shutdown();
+        }
+      }
+    });
+
+    test(`CLI ${contract.version}: no listener means timeout; early exit and abort stay private`, async () => {
+      for (const mode of ["early", "silent", "abort"]) {
+        const controller = new FunctionsServeController({ stopGraceMs: 300 });
+        const value = invocation(mode === "early" ? "early" : "silent");
+        value.environment.LISTENER = contract.listener;
+        // Timeout must allow the fixture to boot, so we also verify its TERM cleanup.
+        value.timeoutSeconds = mode === "silent" ? 0.3 : 2;
+        const abort = new AbortController();
+        try {
+          await rm(value.environment.INSPECT_FILE!, { force: true });
+          await rm(value.environment.TERM_FILE!, { force: true });
+          const start = controller.start(value, abort.signal);
+          const rejection = assert.rejects(start, (error: Error) => {
+            assert.match(error.message, mode === "early" ? /early_exit/ : mode === "silent" ? /timeout/ : /abort/);
+            assertNoPrivateOutput(exposedError(error));
+            return true;
+          });
+          if (mode === "abort") {
+            await eventually(async () => access(value.environment.INSPECT_FILE!).then(() => true, () => false));
+            abort.abort();
+          }
+          await rejection;
+          const status = await controller.status();
+          assert.equal(status.details?.phase, "stopped");
+          assertNoPrivateOutput(status);
+          if (mode !== "early") {
+            assert.equal((status.details?.lastExit as any).cleanup, "confirmed");
+            await access(value.environment.TERM_FILE!);
+          }
+        } finally {
+          await controller.shutdown();
+        }
+      }
+    });
+  }
+
   test("uses exact trusted argv, cwd, and environment and recognizes split ANSI UTF-8 markers on either stream", async () => {
     for (const mode of ["stdout", "stderr"]) {
       const controller = new FunctionsServeController({ stopGraceMs: 100 });

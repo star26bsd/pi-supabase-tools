@@ -86,7 +86,7 @@ Project configuration is loaded only when Pi reports the project as trusted. Thi
 
 Configuration parsing and validation fail closed. If a discovered file is malformed or invalid, the tools remain visible but every invocation reports an actionable configuration error and no child process starts. The extension never silently falls back to defaults past an invalid discovered file.
 
-A missing configured executable produces an actionable error. Version compatibility remains the user's responsibility.
+A missing configured executable produces an actionable error. Version compatibility remains the user's responsibility. [CLI compatibility evidence](CLI-COMPATIBILITY.md) records the pinned 2.111.0/2.122.1 non-experimental source contracts, automated fixture coverage, and remaining live-integration gates.
 
 ## Destructive-operation gate
 
@@ -149,7 +149,7 @@ Start is disabled unless effective trusted configuration contains `functionsServ
 
 One in-memory manager owns one controller per project for the current Pi session. A controller is exclusive for its project: this package does not support multiple concurrently managed `functions serve` instances for the same project. It performs no external adoption, process or port discovery, PID file, lock, lease, daemon, or cross-session coordination. State is serialized through `stopped`, `starting`, `running`, and `stopping`. Repeated start while running and stop while stopped are idempotent. Unexpected exit returns the controller to stopped and records only timestamp, exit code, and signal. Stop and status use captured live state even if configuration later changes or becomes malformed.
 
-Startup uses a supervised long-lived process and the fixed 120-second timeout. Both output streams are drained before readiness waiting. Readiness requires Supabase's `Serving functions on ...` marker, tolerating ANSI, timestamps, UTF-8, and chunk boundaries. The marker is emitted by the embedded `Deno.serve` listener in Supabase CLI 2.111.0; it establishes listener startup, not the health of any function. There is no HTTP probe. Marker changes cause timeout and fail closed. Early exit, spawn error, abort, shutdown during start, or timeout terminates the owned process group and settles boundedly.
+Startup uses a supervised long-lived process and the fixed 120-second timeout. Both output streams are drained before readiness waiting. Readiness requires Supabase's `Serving functions on ...` marker, tolerating ANSI, timestamps, UTF-8, and chunk boundaries. The marker is emitted by the embedded `Deno.serve` listener in Supabase CLI 2.111.0 and 2.122.1's non-experimental serving source; version-grounded fixtures cover both. It establishes listener startup, not the health of any function. There is no HTTP probe. Marker changes cause timeout and fail closed. Early exit, spawn error, abort, shutdown during start, or timeout terminates the owned process group and settles boundedly.
 
 Stop sends SIGTERM to the owned process group and allows a bounded 10-second grace for Supabase CLI 2.111.0's Bun/TypeScript path to remove the Edge Runtime container and staged secret artifacts. It uses SIGKILL only if the grace expires, then bounds stdio settlement. A forced stop records `cleanup_unconfirmed`; it never claims confirmed cleanup. Existing one-shot timeout and abort behavior remains immediate hard process-tree termination. Normal quit, reload, new, resume, and fork invokes idempotent cleanup. Recovery from SIGKILL, host failure, or power loss is out of scope.
 
