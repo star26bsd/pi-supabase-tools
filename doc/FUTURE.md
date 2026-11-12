@@ -19,7 +19,7 @@ This file records deferred candidates, not commitments for the first usable `pi-
 ## Functions service recovery
 
 - Recovery after SIGKILL, host failure, or power loss is deliberately deferred; do not add PID files, process discovery, external adoption, locks, leases, or cross-session coordination without a separately designed ownership model.
-- Reverify the private listener-readiness marker and graceful cleanup behavior when upgrading beyond Supabase CLI 2.111.0.
+- Reverify live listener readiness and real runtime/artifact cleanup when upgrading the consuming CLI/stack. [2.111.0/2.122.1 source and fixture evidence](CLI-COMPATIBILITY.md) does not replace that integration gate.
 
 ## Distribution verification
 
