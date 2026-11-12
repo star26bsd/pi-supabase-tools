@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import ts from "typescript";
 import supabaseTools from "../index.js";
 
-async function fixture() {
+async function fixture(initialOutput = "FIRST\n" + "x".repeat(60 * 1024) + "\nLAST\n", diagnostics = "SECRET-STDERR") {
   const root = mkdtempSync(join(tmpdir(), "pi-types-tool-test-"));
   mkdirSync(join(root, ".pi"));
   mkdirSync(join(root, "work"));
   const marker = join(root, "spawned.json");
   const source = join(root, "source.txt");
   const script = join(root, "generate.mjs");
-  writeFileSync(source, "FIRST\n" + "x".repeat(60 * 1024) + "\nLAST\n");
+  writeFileSync(source, initialOutput);
   writeFileSync(script, `import { readFileSync, writeFileSync } from "node:fs";
     writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env: process.env.TYPE_TEST }));
-    process.stderr.write("SECRET-STDERR");
-    process.stdout.write(readFileSync(${JSON.stringify(source)}));`);
+    process.stderr.write(${JSON.stringify(diagnostics)});
+    const bytes = readFileSync(${JSON.stringify(source)});
+    const unicode = bytes.indexOf(Buffer.from("ï"));
+    const split = unicode >= 0 ? unicode + 1 : 5;
+    process.stdout.write(bytes.subarray(0, split));
+    setTimeout(() => process.stdout.write(bytes.subarray(split)), 5);`);
   const config = {
     workingDirectory: "work",
     commands: { supabaseCli: [process.execPath, script] },
@@ -113,3 +119,94 @@ test("registered shutdown removes retained source and refuses further use of the
     await assert.rejects(f.call({ action: "capture" }), /session_shutdown/);
   } finally { await f.cleanup(); }
 });
+
+// Disposable consumer only: the package transports bytes, never validates/rewrites types.
+// Do not import a consuming project's generator or install this helper as a tool.
+function consumeTypes(path: string, target: string, check: boolean): boolean {
+  const program = ts.createProgram([path], {
+    noEmit: true, strict: true, types: [], skipLibCheck: true, target: ts.ScriptTarget.ES2022,
+  });
+  assert.equal(ts.getPreEmitDiagnostics(program).length, 0, "consumer rejects invalid TypeScript");
+  const source = readFileSync(path, "utf8");
+  assert.match(source, /export type Database =/);
+  const canonical = source.replace(/\n+$/, "") + "\n";
+  if (check) return readFileSync(target, "utf8") === canonical;
+  const temporary = `${target}.tmp`;
+  try {
+    writeFileSync(temporary, canonical);
+    renameSync(temporary, target);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+  return true;
+}
+
+for (const version of ["2.111.0", "2.122.1"]) {
+  test(`CLI ${version}: private byte-exact capture and consumer install/release/fresh check`, async () => {
+    // Constructed schema excerpts, not real database output; see doc/TYPE-CAPTURE-COMPATIBILITY.md.
+    const source = readFileSync(new URL(`./fixtures/types-${version}.txt`, import.meta.url), "utf8") + "\n";
+    const diagnostics = "Connecting to 127.0.0.1 54322\n"
+      + (version === "2.122.1"
+        ? "Generated TypeScript is unformatted. Format it with:\n  npx oxfmt <generated-file.ts>\n"
+        : "")
+      + "PRIVATE-SYNTHETIC-DIAGNOSTIC\n";
+    const f = await fixture(source, diagnostics);
+    const target = join(f.root, "installed.ts");
+    const captures: string[] = [];
+    async function capture(expected: string) {
+      rmSync(f.marker, { force: true });
+      const result = await f.call({ action: "capture" });
+      const artifact = result.details;
+      assert.equal(existsSync(f.marker), true, "every capture must execute the producer again");
+      assert.deepEqual(Object.keys(artifact).sort(), ["artifactId", "bytes", "complete", "path", "sha256"]);
+      assert.equal(artifact.complete, true);
+      assert.equal(artifact.bytes, Buffer.byteLength(expected));
+      assert.equal(artifact.sha256, createHash("sha256").update(expected).digest("hex"));
+      assert.deepEqual(readFileSync(artifact.path), Buffer.from(expected));
+      assert.equal(captures.includes(artifact.artifactId), false);
+      captures.push(artifact.artifactId);
+      assert.deepEqual(f.updates, []);
+      assert.doesNotMatch(JSON.stringify(result), /export type|ComputedFields|naïve_label|PRIVATE|Connecting to|unformatted/);
+      return artifact;
+    }
+    async function release(artifact: { artifactId: string; path: string }) {
+      await f.call({ action: "release", artifactId: artifact.artifactId });
+      assert.equal(existsSync(artifact.path), false);
+    }
+    try {
+      const a = await capture(source);
+      assert.equal(source.includes("ComputedFields"), version === "2.122.1");
+      // Capture preserves the two terminal LF bytes; only the consumer canonicalizes.
+      assert.ok(source.endsWith("\n\n"));
+      assert.equal(consumeTypes(a.path, target, false), true);
+      const installed = readFileSync(target);
+      assert.equal(installed.toString(), source.replace(/\n+$/, "") + "\n");
+      await assert.rejects(f.call({ action: "capture" }), /artifact_retained/);
+      await release(a); // Consumer acknowledged successful installation.
+
+      const b = await capture(source);
+      assert.notEqual(b.path, a.path);
+      assert.equal(b.sha256, a.sha256);
+      assert.equal(consumeTypes(b.path, target, true), true);
+      assert.deepEqual(readFileSync(target), installed);
+      await release(b); // Consumer acknowledged matching fresh check.
+
+      const changed = source.replace("id: number", "id: string");
+      writeFileSync(f.source, changed);
+      const c = await capture(changed);
+      assert.notEqual(c.sha256, a.sha256);
+      assert.equal(consumeTypes(c.path, target, true), false);
+      assert.deepEqual(readFileSync(target), installed, "mismatch must not rewrite the target");
+      await release(c); // Failed comparison still consumed its artifact.
+
+      const invalid = "export type Database = {\n";
+      writeFileSync(f.source, invalid);
+      const d = await capture(invalid);
+      assert.throws(() => consumeTypes(d.path, target, false), /consumer rejects invalid TypeScript/);
+      assert.deepEqual(readFileSync(target), installed, "invalid input must not rewrite the target");
+      await release(d); // complete:true is not validation; rejected source is still released.
+    } finally {
+      await f.cleanup();
+    }
+  });
+}

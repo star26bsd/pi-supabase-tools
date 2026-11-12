@@ -124,6 +124,8 @@ There is one in-flight or retained artifact per Pi session, capped at **10 MiB**
 
 DMNG's existing `generate_api_types({ input: artifact.path, target })` / `--input` consumer is compatible; use a disposable target for smoke tests. Adopting this package and enabling its tool/configuration in DMNG is a separate change.
 
+[Type-capture compatibility evidence](doc/TYPE-CAPTURE-COMPATIBILITY.md) covers constructed CLI 2.111.0/2.122.1 source shapes (including `ComputedFields`) through the registered tool and a disposable consumer. Capture remains byte-preserving; compiler validation, newline canonicalization and comparison belong to the consumer. These fixtures do not replace live upgraded-CLI generation and a fresh consumer check.
+
 ## Security boundary
 
 This package narrows model choice; it is not an operating-system sandbox around Supabase CLI or Deno. Configured binaries run with the host environment and permissions deliberately granted to the Pi process. Project configuration is loaded only when Pi reports the project as trusted, and invalid discovered configuration fails closed.

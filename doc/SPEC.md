@@ -183,6 +183,8 @@ Cleanup errors are reported with the owned directory for operator diagnosis and 
 
 Capture A → consumer validates/installs A using its existing input-file interface (no CLI subprocess) → acknowledge and release A → **new capture invocation B** → consumer checks B against the target without writing → acknowledge and release B. Rechecking A does not establish freshness. Matching B passes and changed B fails without changing the target. Invalid consumer input leaves the target unchanged regardless of capture completion.
 
+[Type-capture compatibility evidence](TYPE-CAPTURE-COMPATIBILITY.md) documents version-grounded 2.111.0/2.122.1 fixtures, including `ComputedFields`, exercised through the registered tool and a disposable filesystem consumer. No capture-side source parsing or rewriting is introduced; real CLI/catalog generation and the consuming project's own validation remain separate live gates.
+
 ## Session steering
 
 The package does not prescribe orchestration or automatically load a role prompt. Users grant the desired focused tools (including `supabase_types` when enabled) to a visible, named Supabase session through Pi's tool allowlist and own any additional steering.

@@ -1,0 +1,41 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[]
+
+export type Database = {
+  api: {
+    Tables: {
+      contacts: {
+        Row: { id: number; "naïve_label": string; display_name: string | null }
+        ComputedFields: "display_name"
+        Insert: { id?: number; "naïve_label": string }
+        Update: { id?: number; "naïve_label"?: string }
+        Relationships: []
+      }
+    }
+    Views: {
+      contact_summary: {
+        Row: { id: number | null; "naïve_label": string | null }
+        ComputedFields: never
+        Relationships: []
+      }
+    }
+    Functions: {
+      contact_label: {
+        Args: {
+          contact: Omit<
+            Database["api"]["Tables"]["contacts"]["Row"],
+            Database["api"]["Tables"]["contacts"]["ComputedFields"]
+          >
+        }
+        Returns: string
+      }
+    }
+    Enums: { [_ in never]: never }
+    CompositeTypes: { [_ in never]: never }
+  }
+}
