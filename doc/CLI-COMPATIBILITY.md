@@ -34,6 +34,27 @@ contracts (`Serving Functions at ...`), and upstream
 That is not a reason to rewrite the non-experimental listener parser. CLI v3, native
 runtime, global CLI upgrades and per-worktree stacks are outside this claim.
 
+## One-shot stdin EOF correction (v0.4.2)
+
+The consuming CLI 2.122.1 rollout exposed a one-shot runner defect: `migration new`
+created its empty file, then timed out while waiting for stdin EOF. Source inspected
+on 2026-11-13 at the pinned 2.122.1 revision above,
+`commands/migration/new/new.handler.ts`, writes the file before consuming
+`stdin.pipedBytesStream` when stdin is not a TTY, and reports success only afterward.
+The previous runner left Node's default stdin pipe open without supplying input.
+A created file therefore did not establish successful command completion.
+
+The shared one-shot runner now explicitly ignores stdin (immediate EOF) and keeps
+stdout/stderr piped. No stdin-payload interface, shell, PTY, command-specific branch,
+permission change or timeout extension is introduced. The functions lifecycle and
+private status-acquisition launchers are not changed.
+
+`tool.test.ts` includes a real Node child that creates a file, consumes stdin until
+EOF, then emits stdout/stderr and exits. The test failed with the old runner's timeout
+and passes with zero input bytes and exit code zero. This is a process-contract
+regression, not a live Supabase command test; consuming projects must still verify
+CLI completion through their trusted tool after updating/reloading the package.
+
 ## Verification and consuming rollout
 
 Run `npm run check` (type-check and complete automated suite). `functions-serve.test.ts`

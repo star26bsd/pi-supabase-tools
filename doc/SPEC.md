@@ -72,6 +72,8 @@ A configuration using the default npm-based Supabase CLI and a Deno binary from 
 }
 ```
 
+Commands using the shared one-shot runner are non-interactive: stdin is ignored (immediate EOF), while stdout and stderr remain separately piped for existing capture/redaction. The tool interface does not accept stdin payloads or interactive terminal input. This prevents commands that consume piped input, such as `migration new`, from waiting indefinitely on an unused input pipe. The supervised functions lifecycle and private status-acquisition launchers are unchanged.
+
 Command prefixes are argument arrays, never shell strings. `workingDirectory` is resolved relative to the active session's `ctx.cwd` for every invocation and is shared by both tools. A user with a standalone or Homebrew Supabase CLI can replace the npm prefix, for example:
 
 ```json

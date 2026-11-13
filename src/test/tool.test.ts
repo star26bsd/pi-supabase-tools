@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -69,6 +69,38 @@ describe("direct process execution", () => {
     assert.match(result.content[0].text, /\["prefix-value","literal value","; rm -rf \/"\]/);
     assert.ok(updates.length > 0);
     assert.equal(result.details?.exitCode, 0);
+  });
+
+  test("delivers empty stdin EOF before command completion", async () => {
+    const marker = join(directory, "stdin-eof-created");
+    const script = join(directory, "read-stdin.mjs");
+    await writeFile(script, [
+      'import { writeFile } from "node:fs/promises";',
+      // Like migration new: create a file, consume piped input, then report success.
+      'await writeFile(process.argv[2], "created");',
+      'let bytes = 0;',
+      'for await (const chunk of process.stdin) bytes += chunk.length;',
+      'console.log(`stdin bytes: ${bytes}`);',
+      'console.error("stderr after EOF");',
+    ].join("\n"), "utf-8");
+    const updates: string[] = [];
+
+    const result = await runCommand({
+      prefix: [process.execPath, script],
+      args: [marker],
+      cwd: directory,
+      environment: process.env,
+      timeout: 2,
+    }, {
+      signal: undefined,
+      onUpdate: (update) => updates.push(update.content[0].text),
+    });
+
+    assert.equal(await readFile(marker, "utf-8"), "created");
+    assert.equal(result.details?.exitCode, 0);
+    assert.match(result.content[0].text, /stdin bytes: 0/);
+    assert.match(result.content[0].text, /stderr after EOF/);
+    assert.ok(updates.some((update) => update.includes("stdin bytes: 0")));
   });
 
   test("rejects with output when a command exits unsuccessfully", async () => {
