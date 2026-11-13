@@ -170,6 +170,8 @@ export function runCommand(
         shell: false,
         cwd,
         env: environment,
+        // No stdin payload is supported; readers must receive EOF, not an open pipe.
+        stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
       reject(failure("start", processStartError(command, cwd, error).message));

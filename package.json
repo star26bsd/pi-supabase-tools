@@ -1,6 +1,6 @@
 {
   "name": "pi-supabase-tools",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "description": "Focused Supabase CLI and Edge Function test tools for the Pi coding agent.",
   "license": "MIT",
